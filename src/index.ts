@@ -15,9 +15,12 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
+import Groq from "groq-sdk";
 import axios from "axios";
 import bs58 from "bs58";
 import "dotenv/config";
+
+// ─── Types ───────────────────────────────────────────────
 
 interface TokenData {
   address: string;
@@ -28,68 +31,21 @@ interface TokenData {
   volume24h: string;
 }
 
-interface NarrativeTheme {
+interface DiscoveredNarrative {
   name: string;
-  keywords: string[];
+  description: string;
   tokenName: string;
   symbol: string;
-  description: string;
+  matchingTokens: string[]; // symbols of tokens that belong to this narrative
 }
 
-const NARRATIVE_THRESHOLD = 3;
-
-const NARRATIVES: NarrativeTheme[] = [
-  {
-    name: "Dog Meme Revival",
-    keywords: ["dog", "bonk", "wif", "shiba", "inu", "puppy", "doge"],
-    tokenName: "DogMemeRevival2026",
-    symbol: "DOG26",
-    description: "Dog memes heating up - BONK/WIF vibes detected! 🐕",
-  },
-  {
-    name: "Cat Season",
-    keywords: ["cat", "popcat", "mew", "kitten", "feline", "kitty"],
-    tokenName: "CatSeason2026",
-    symbol: "CAT26",
-    description: "Cat season incoming - POPCAT/MEW style! 🐱",
-  },
-  {
-    name: "Political Memes",
-    keywords: ["trump", "maga", "president", "political", "donald"],
-    tokenName: "PoliticalMemeToken2026",
-    symbol: "POL26",
-    description: "Political narrative heating up! 🇺🇸",
-  },
-  {
-    name: "AI Themed",
-    keywords: ["ai", "grok", "chatgpt", "openai", "artificial", "neural"],
-    tokenName: "AIMemeToken2026",
-    symbol: "AI26",
-    description: "AI-themed tokens gaining traction! 🤖",
-  },
-  {
-    name: "Exotic Animals",
-    keywords: ["goat", "peanut", "pnut", "squirrel", "penguin", "giga", "hippo", "moo", "deng"],
-    tokenName: "ExoticAnimalMeme2026",
-    symbol: "ANML26",
-    description: "Exotic animal memes rising! 🐐",
-  },
-  {
-    name: "Food Memes",
-    keywords: ["pizza", "burger", "cookie", "banana", "pepe", "frog"],
-    tokenName: "FoodMemeToken2026",
-    symbol: "FOOD26",
-    description: "Food-themed memes cooking! 🍕",
-  },
-];
-
-
+// ─── DexScreener Data Fetching ────────────────────────────
 
 async function fetchDexScreenerTokens(): Promise<TokenData[]> {
   const allTokens: Map<string, TokenData> = new Map();
 
-  // Strategy 1: Search for meme-related terms on Solana
-  const searchQueries = ["dog meme", "cat meme", "pepe", "ai token", "trump", "bonk", "wif", "popcat"];
+  // Strategy 1: Search for broad meme-related terms on Solana
+  const searchQueries = ["meme", "dog", "cat", "pepe", "ai", "trump", "bonk", "wif", "popcat", "frog"];
 
   for (const query of searchQueries) {
     try {
@@ -98,7 +54,6 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
         { timeout: 10000 }
       );
       const pairs = response.data?.pairs || [];
-      // Filter to Solana chain only
       const solanaPairs = pairs.filter((pair: any) => pair.chainId === "solana");
 
       for (const pair of solanaPairs.slice(0, 20)) {
@@ -120,7 +75,7 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
     }
   }
 
-  // Strategy 2: Get trending/boosted tokens and filter to Solana
+  // Strategy 2: Get trending/boosted tokens filtered to Solana
   try {
     const boostResponse = await axios.get(
       "https://api.dexscreener.com/token-boosts/top/v1",
@@ -129,7 +84,6 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
     const boostedTokens = boostResponse.data || [];
     const solanaBoosted = boostedTokens.filter((t: any) => t.chainId === "solana");
 
-    // For each boosted Solana token, fetch its pair data
     for (const token of solanaBoosted.slice(0, 10)) {
       try {
         const pairResponse = await axios.get(
@@ -163,37 +117,116 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
   return Array.from(allTokens.values());
 }
 
-function detectNarratives(tokens: TokenData[]): { narrative: NarrativeTheme; matches: TokenData[] }[] {
-  const results: { narrative: NarrativeTheme; matches: TokenData[] }[] = [];
+// ─── Groq AI Narrative Discovery ──────────────────────────
 
-  for (const narrative of NARRATIVES) {
-    const matches = tokens.filter((token) => {
-      const searchText = `${token.name} ${token.symbol}`.toLowerCase();
-      return narrative.keywords.some(
-        (keyword) => searchText.includes(keyword.toLowerCase())
+async function discoverNarrativesWithAI(tokens: TokenData[]): Promise<DiscoveredNarrative[]> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    console.error("❌ GROQ_API_KEY not set in .env — cannot discover narratives");
+    console.error("   Get a free key at: https://console.groq.com/keys");
+    process.exit(1);
+  }
+
+  const groq = new Groq({ apiKey });
+
+  // Prepare a concise token list for the prompt
+  const tokenList = tokens
+    .map((t) => `${t.symbol} (${t.name})`)
+    .join(", ");
+
+  const systemPrompt = `You are a meme coin narrative analyst. You analyze lists of Solana meme tokens and identify STRONG narrative themes. You always respond with valid JSON only.`;
+
+  const userPrompt = `Analyze the following list of Solana meme tokens and identify STRONG narrative themes — groups of 3 or more tokens that share a common theme or trend.
+
+TOKEN LIST:
+${tokenList}
+
+INSTRUCTIONS:
+1. Identify distinct narrative themes (e.g., "Dog Coins", "AI Tokens", "Political Memes", "Frog/Pepe Variants", etc.)
+2. Each narrative must have AT LEAST 3 matching tokens from the list
+3. A token can only belong to ONE narrative (choose the best fit)
+4. For each narrative, suggest a creative token name and 3-5 letter symbol for a reactive token that could be minted in response
+5. Only return narratives you are confident about — quality over quantity
+
+Respond with ONLY valid JSON using this exact schema:
+[
+  {
+    "name": "Narrative Theme Name",
+    "description": "Brief exciting description of why this narrative is trending (include an emoji)",
+    "tokenName": "SuggestedTokenName",
+    "symbol": "SYM",
+    "matchingTokens": ["TOKEN1", "TOKEN2", "TOKEN3"]
+  }
+]
+
+If no strong narratives are found (fewer than 3 tokens matching any theme), return an empty array: []`;
+
+  console.log("\n🤖 Asking Groq (Llama 3.3 70B) to analyze token narratives...");
+
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const completion = await groq.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 2048,
+        response_format: { type: "json_object" },
+      });
+
+      const responseText = completion.choices[0]?.message?.content?.trim() || "";
+
+      // Parse the JSON response
+      let jsonStr = responseText;
+      if (jsonStr.startsWith("```")) {
+        jsonStr = jsonStr.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+      }
+
+      const parsed = JSON.parse(jsonStr);
+      // Handle both { narratives: [...] } and [...] formats
+      const narratives: DiscoveredNarrative[] = Array.isArray(parsed) ? parsed : (parsed.narratives || parsed.data || []);
+
+      // Validate the response structure
+      if (!Array.isArray(narratives)) {
+        console.log("⚠️  Groq returned invalid format, expected array");
+        return [];
+      }
+
+      // Filter out narratives with fewer than 3 matching tokens
+      const validNarratives = narratives.filter(
+        (n) =>
+          n.name &&
+          n.description &&
+          n.tokenName &&
+          n.symbol &&
+          Array.isArray(n.matchingTokens) &&
+          n.matchingTokens.length >= 3
       );
-    });
 
-    if (matches.length >= NARRATIVE_THRESHOLD) {
-      results.push({ narrative, matches });
+      return validNarratives;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Check if it's a rate limit error and we have retries left
+      if (errorMsg.includes("429") && attempt < maxRetries) {
+        const waitSeconds = attempt * 10; // 10s, 20s
+        console.log(`   ⏳ Rate limited — retrying in ${waitSeconds}s (attempt ${attempt}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+        continue;
+      }
+
+      console.error("❌ Groq API error:", errorMsg);
+      return [];
     }
   }
 
-  return results;
+  return [];
 }
 
-function createTokenName(narrativeName: string, timestamp: number): { name: string; symbol: string } {
-  const baseNames: Record<string, { name: string; symbol: string }> = {
-    "Dog Meme Revival": { name: "DogMemeRevival2026", symbol: "DOG26" },
-    "Cat Season": { name: "CatSeason2026", symbol: "CAT26" },
-    "Political Memes": { name: "PoliticalMemeToken2026", symbol: "POL26" },
-    "AI Themed": { name: "AIMemeToken2026", symbol: "AI26" },
-    "Exotic Animals": { name: "ExoticAnimalMeme2026", symbol: "ANML26" },
-    "Food Memes": { name: "FoodMemeToken2026", symbol: "FOOD26" },
-  };
-
-  return baseNames[narrativeName] || { name: "MemeToken2026", symbol: "MEME26" };
-}
+// ─── SPL Token Creation ───────────────────────────────────
 
 async function createSplToken(
   connection: Connection,
@@ -262,6 +295,8 @@ async function createSplToken(
   return { mintAddress: mint.toBase58(), signature };
 }
 
+// ─── Main Agent Loop ──────────────────────────────────────
+
 async function main() {
   console.log("=".repeat(60));
   console.log("🐕 MEME NARRATIVE DETECTOR AGENT - SOLANA DEVNET 🐕");
@@ -314,28 +349,37 @@ async function main() {
 
   const canCreateToken = balance >= 0.005 * 1e9;
 
+  // Step 1: Fetch token data
   console.log("\n🔍 Fetching token data from DexScreener...");
   const tokens = await fetchDexScreenerTokens();
-  console.log(`📊 Fetched ${tokens.length} tokens`);
+  console.log(`📊 Fetched ${tokens.length} unique tokens`);
 
-  console.log("\n🧠 Analyzing narratives...");
-  const detectedNarratives = detectNarratives(tokens);
-
-  if (detectedNarratives.length === 0) {
-    console.log("\n❌ No strong narratives detected (need 3+ matching tokens)");
-    console.log("💡 Try again later or check API availability");
+  if (tokens.length === 0) {
+    console.log("\n❌ No tokens fetched — cannot analyze narratives");
     process.exit(0);
   }
 
+  // Step 2: Discover narratives with Gemini AI
+  console.log("\n🧠 Analyzing narratives with Gemini AI...");
+  const narratives = await discoverNarrativesWithAI(tokens);
+
+  if (narratives.length === 0) {
+    console.log("\n❌ No strong narratives discovered by AI");
+    console.log("💡 Try again later when more tokens are trending");
+    process.exit(0);
+  }
+
+  // Step 3: Display and react to narratives
   console.log("\n" + "=".repeat(60));
-  console.log("🚨 NARRATIVES DETECTED!");
+  console.log("🚨 AI-DISCOVERED NARRATIVES!");
   console.log("=".repeat(60));
 
-  for (const { narrative, matches } of detectedNarratives) {
+  for (const narrative of narratives) {
     console.log(`\n📌 ${narrative.name}`);
-    console.log(`   Matches: ${matches.length} tokens`);
-    console.log(`   Tokens: ${matches.map((m) => m.symbol).join(", ")}`);
+    console.log(`   Matches: ${narrative.matchingTokens.length} tokens`);
+    console.log(`   Tokens: ${narrative.matchingTokens.join(", ")}`);
     console.log(`   Reason: ${narrative.description}`);
+    console.log(`   Suggested: ${narrative.tokenName} ($${narrative.symbol})`);
 
     if (!canCreateToken) {
       console.log("\n⏭️  Skipping token creation (insufficient balance)");
@@ -343,22 +387,20 @@ async function main() {
       continue;
     }
 
-    const { name, symbol } = createTokenName(narrative.name, Date.now());
-
     console.log("\n⛓️  Creating reactive token on devnet...");
     try {
       const result = await createSplToken(
         connection,
         wallet,
-        name,
-        symbol,
+        narrative.tokenName,
+        narrative.symbol,
         narrative.description
       );
 
       console.log("\n✅ TOKEN CREATED SUCCESSFULLY!");
       console.log("─".repeat(60));
-      console.log(`   Token Name:    ${name}`);
-      console.log(`   Symbol:        ${symbol}`);
+      console.log(`   Token Name:    ${narrative.tokenName}`);
+      console.log(`   Symbol:        ${narrative.symbol}`);
       console.log(`   Mint Address:  ${result.mintAddress}`);
       console.log(`   TX Signature:  ${result.signature}`);
       console.log(`   Explorer:      https://solscan.io/tx/${result.signature}?cluster=devnet`);
