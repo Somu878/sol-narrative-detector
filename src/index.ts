@@ -86,28 +86,81 @@ const NARRATIVES: NarrativeTheme[] = [
 
 
 async function fetchDexScreenerTokens(): Promise<TokenData[]> {
+  const allTokens: Map<string, TokenData> = new Map();
+
+  // Strategy 1: Search for meme-related terms on Solana
+  const searchQueries = ["dog meme", "cat meme", "pepe", "ai token", "trump", "bonk", "wif", "popcat"];
+
+  for (const query of searchQueries) {
+    try {
+      const response = await axios.get(
+        `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`,
+        { timeout: 10000 }
+      );
+      const pairs = response.data?.pairs || [];
+      // Filter to Solana chain only
+      const solanaPairs = pairs.filter((pair: any) => pair.chainId === "solana");
+
+      for (const pair of solanaPairs.slice(0, 20)) {
+        const address = pair.baseToken?.address || "";
+        if (address && !allTokens.has(address)) {
+          allTokens.set(address, {
+            address,
+            name: pair.baseToken?.name || "",
+            symbol: pair.baseToken?.symbol || "",
+            priceUsd: pair.priceUsd || "0",
+            liquidity: pair.liquidity?.usd?.toString() || "0",
+            volume24h: pair.volume?.h24?.toString() || "0",
+          });
+        }
+      }
+      console.log(`   🔎 Search "${query}": found ${solanaPairs.length} Solana pairs`);
+    } catch (error) {
+      console.log(`   ⚠️  Search "${query}" failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  // Strategy 2: Get trending/boosted tokens and filter to Solana
   try {
-    const response = await axios.get(
-      "https://api.dexscreener.com/latest/dex/tokens/solana",
+    const boostResponse = await axios.get(
+      "https://api.dexscreener.com/token-boosts/top/v1",
       { timeout: 10000 }
     );
-    const pairs = response.data?.pairs || [];
-    if (!pairs || pairs.length === 0) {
-      console.log("⚠️  API returned empty results");
-      return [];
+    const boostedTokens = boostResponse.data || [];
+    const solanaBoosted = boostedTokens.filter((t: any) => t.chainId === "solana");
+
+    // For each boosted Solana token, fetch its pair data
+    for (const token of solanaBoosted.slice(0, 10)) {
+      try {
+        const pairResponse = await axios.get(
+          `https://api.dexscreener.com/tokens/v1/solana/${token.tokenAddress}`,
+          { timeout: 10000 }
+        );
+        const pairs = pairResponse.data || [];
+        if (pairs.length > 0) {
+          const pair = pairs[0];
+          const address = pair.baseToken?.address || token.tokenAddress;
+          if (!allTokens.has(address)) {
+            allTokens.set(address, {
+              address,
+              name: pair.baseToken?.name || "",
+              symbol: pair.baseToken?.symbol || "",
+              priceUsd: pair.priceUsd || "0",
+              liquidity: pair.liquidity?.usd?.toString() || "0",
+              volume24h: pair.volume?.h24?.toString() || "0",
+            });
+          }
+        }
+      } catch {
+        // Skip individual token fetch failures
+      }
     }
-    return pairs.slice(0, 50).map((pair: any) => ({
-      address: pair.baseToken?.address || "",
-      name: pair.baseToken?.name || "",
-      symbol: pair.baseToken?.symbol || "",
-      priceUsd: pair.priceUsd || "0",
-      liquidity: pair.liquidity?.usd || "0",
-      volume24h: pair.volume?.h24 || "0",
-    }));
+    console.log(`   🚀 Boosted tokens: found ${solanaBoosted.length} Solana tokens`);
   } catch (error) {
-    console.log("⚠️  DexScreener API failed:", error instanceof Error ? error.message : error);
-    return [];
+    console.log("   ⚠️  Boosted tokens fetch failed:", error instanceof Error ? error.message : error);
   }
+
+  return Array.from(allTokens.values());
 }
 
 function detectNarratives(tokens: TokenData[]): { narrative: NarrativeTheme; matches: TokenData[] }[] {
