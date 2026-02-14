@@ -18,7 +18,21 @@ import {
 import Groq from "groq-sdk";
 import axios from "axios";
 import bs58 from "bs58";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import "dotenv/config";
+
+// ─── Constants ────────────────────────────────────────────
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_DIR = path.join(__dirname, "..", "data");
+const HISTORY_FILE = path.join(DATA_DIR, "history.json");
+const MAX_TOKENS_PER_RUN = 3;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -36,7 +50,115 @@ interface DiscoveredNarrative {
   description: string;
   tokenName: string;
   symbol: string;
-  matchingTokens: string[]; // symbols of tokens that belong to this narrative
+  confidence: number; // 1-10 score from the LLM
+  matchingTokens: string[];
+}
+
+interface HistoryEntry {
+  narrative: string;
+  tokenName: string;
+  symbol: string;
+  mintAddress: string;
+  txSignature: string;
+  matchingTokens: string[];
+  confidence: number;
+  createdAt: string;
+}
+
+interface HistoryData {
+  entries: HistoryEntry[];
+}
+
+// ─── History / Persistence ────────────────────────────────
+
+function loadHistory(): HistoryData {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const raw = fs.readFileSync(HISTORY_FILE, "utf-8");
+      return JSON.parse(raw);
+    }
+  } catch (error) {
+    console.log("⚠️  Could not load history, starting fresh");
+  }
+  return { entries: [] };
+}
+
+function saveHistory(history: HistoryData): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2), "utf-8");
+}
+
+function isNarrativeAlreadyMinted(history: HistoryData, narrativeName: string): HistoryEntry | undefined {
+  // Normalize names for comparison (case-insensitive, trimmed)
+  const normalized = narrativeName.toLowerCase().trim();
+  return history.entries.find((entry) => {
+    const entryNormalized = entry.narrative.toLowerCase().trim();
+    // Check for exact match or significant overlap
+    return (
+      entryNormalized === normalized ||
+      entryNormalized.includes(normalized) ||
+      normalized.includes(entryNormalized)
+    );
+  });
+}
+
+// ─── Telegram Notifications ──────────────────────────────
+
+async function sendTelegram(message: string): Promise<void> {
+  if (!TELEGRAM_ENABLED) return;
+
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      },
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    console.log("⚠️  Telegram send failed:", error instanceof Error ? error.message : error);
+  }
+}
+
+function buildNarrativeSummaryMessage(narratives: DiscoveredNarrative[], newCount: number, skippedCount: number): string {
+  const lines: string[] = [
+    "🚨 <b>Meme Narrative Detector — Analysis Complete</b>",
+    "",
+    `📊 Found <b>${narratives.length}</b> narrative${narratives.length !== 1 ? "s" : ""} | ✨ ${newCount} new | ⏭️ ${skippedCount} already minted`,
+    "",
+  ];
+
+  for (const n of narratives) {
+    const bar = "█".repeat(n.confidence) + "░".repeat(10 - n.confidence);
+    lines.push(`📌 <b>${n.name}</b>  [${bar}] ${n.confidence}/10`);
+    lines.push(`   ${n.description}`);
+    lines.push(`   Tokens: <code>${n.matchingTokens.join(", ")}</code>`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+function buildTokenMintedMessage(
+  narrative: DiscoveredNarrative,
+  mintAddress: string,
+  txSignature: string
+): string {
+  return [
+    `✅ <b>Token Minted — ${narrative.name}</b>`,
+    "",
+    `🪙 <b>${narrative.tokenName}</b> ($${narrative.symbol})`,
+    `📊 Confidence: ${narrative.confidence}/10`,
+    `💬 ${narrative.description}`,
+    "",
+    `🔗 Mint: <code>${mintAddress}</code>`,
+    `🔗 <a href="https://solscan.io/tx/${txSignature}?cluster=devnet">View on Solscan</a>`,
+  ].join("\n");
 }
 
 // ─── DexScreener Data Fetching ────────────────────────────
@@ -146,20 +268,27 @@ INSTRUCTIONS:
 2. Each narrative must have AT LEAST 3 matching tokens from the list
 3. A token can only belong to ONE narrative (choose the best fit)
 4. For each narrative, suggest a creative token name and 3-5 letter symbol for a reactive token that could be minted in response
-5. Only return narratives you are confident about — quality over quantity
+5. Rate each narrative with a "confidence" score from 1-10 based on:
+   - How many tokens match (more = higher)
+   - How clearly the theme is defined (clearer = higher)
+   - How trendy/viral the narrative feels (hotter = higher)
+6. Only return narratives you are confident about — quality over quantity
 
 Respond with ONLY valid JSON using this exact schema:
-[
-  {
-    "name": "Narrative Theme Name",
-    "description": "Brief exciting description of why this narrative is trending (include an emoji)",
-    "tokenName": "SuggestedTokenName",
-    "symbol": "SYM",
-    "matchingTokens": ["TOKEN1", "TOKEN2", "TOKEN3"]
-  }
-]
+{
+  "narratives": [
+    {
+      "name": "Narrative Theme Name",
+      "description": "Brief exciting description of why this narrative is trending (include an emoji)",
+      "tokenName": "SuggestedTokenName",
+      "symbol": "SYM",
+      "confidence": 8,
+      "matchingTokens": ["TOKEN1", "TOKEN2", "TOKEN3"]
+    }
+  ]
+}
 
-If no strong narratives are found (fewer than 3 tokens matching any theme), return an empty array: []`;
+If no strong narratives are found (fewer than 3 tokens matching any theme), return: { "narratives": [] }`;
 
   console.log("\n🤖 Asking Groq (Llama 3.3 70B) to analyze token narratives...");
 
@@ -186,33 +315,38 @@ If no strong narratives are found (fewer than 3 tokens matching any theme), retu
       }
 
       const parsed = JSON.parse(jsonStr);
-      // Handle both { narratives: [...] } and [...] formats
       const narratives: DiscoveredNarrative[] = Array.isArray(parsed) ? parsed : (parsed.narratives || parsed.data || []);
 
-      // Validate the response structure
       if (!Array.isArray(narratives)) {
         console.log("⚠️  Groq returned invalid format, expected array");
         return [];
       }
 
-      // Filter out narratives with fewer than 3 matching tokens
-      const validNarratives = narratives.filter(
-        (n) =>
-          n.name &&
-          n.description &&
-          n.tokenName &&
-          n.symbol &&
-          Array.isArray(n.matchingTokens) &&
-          n.matchingTokens.length >= 3
-      );
+      // Validate and ensure confidence scores exist
+      const validNarratives = narratives
+        .filter(
+          (n) =>
+            n.name &&
+            n.description &&
+            n.tokenName &&
+            n.symbol &&
+            Array.isArray(n.matchingTokens) &&
+            n.matchingTokens.length >= 3
+        )
+        .map((n) => ({
+          ...n,
+          confidence: typeof n.confidence === "number" ? Math.min(10, Math.max(1, n.confidence)) : 5,
+        }));
+
+      // Sort by confidence (highest first)
+      validNarratives.sort((a, b) => b.confidence - a.confidence);
 
       return validNarratives;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
-      // Check if it's a rate limit error and we have retries left
       if (errorMsg.includes("429") && attempt < maxRetries) {
-        const waitSeconds = attempt * 10; // 10s, 20s
+        const waitSeconds = attempt * 10;
         console.log(`   ⏳ Rate limited — retrying in ${waitSeconds}s (attempt ${attempt}/${maxRetries})...`);
         await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
         continue;
@@ -316,6 +450,7 @@ async function main() {
 
   console.log(`\n📡 Connected to: ${rpcUrl}`);
   console.log(`👛 Wallet: ${wallet.publicKey.toBase58().slice(0, 8)}...`);
+  console.log(`📱 Telegram: ${TELEGRAM_ENABLED ? "enabled" : "disabled (set TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID to enable)"}`);
 
   let balance = 0;
   let balanceError = false;
@@ -349,6 +484,15 @@ async function main() {
 
   const canCreateToken = balance >= 0.005 * 1e9;
 
+  // Load history
+  const history = loadHistory();
+  if (history.entries.length > 0) {
+    console.log(`\n📜 History: ${history.entries.length} narratives previously minted`);
+    for (const entry of history.entries) {
+      console.log(`   • ${entry.narrative} → $${entry.symbol} (${entry.createdAt})`);
+    }
+  }
+
   // Step 1: Fetch token data
   console.log("\n🔍 Fetching token data from DexScreener...");
   const tokens = await fetchDexScreenerTokens();
@@ -359,34 +503,63 @@ async function main() {
     process.exit(0);
   }
 
-  // Step 2: Discover narratives with Gemini AI
-  console.log("\n🧠 Analyzing narratives with Gemini AI...");
-  const narratives = await discoverNarrativesWithAI(tokens);
+  // Step 2: Discover narratives with Groq AI
+  console.log("\n🧠 Analyzing narratives with Groq AI...");
+  const allNarratives = await discoverNarrativesWithAI(tokens);
 
-  if (narratives.length === 0) {
+  if (allNarratives.length === 0) {
     console.log("\n❌ No strong narratives discovered by AI");
     console.log("💡 Try again later when more tokens are trending");
     process.exit(0);
   }
 
-  // Step 3: Display and react to narratives
+  // Step 3: Filter out already-minted narratives
   console.log("\n" + "=".repeat(60));
-  console.log("🚨 AI-DISCOVERED NARRATIVES!");
+  console.log("🚨 AI-DISCOVERED NARRATIVES (sorted by confidence)");
   console.log("=".repeat(60));
 
-  for (const narrative of narratives) {
-    console.log(`\n📌 ${narrative.name}`);
+  const newNarratives: DiscoveredNarrative[] = [];
+  const skippedNarratives: { narrative: DiscoveredNarrative; reason: string }[] = [];
+
+  for (const narrative of allNarratives) {
+    const existingEntry = isNarrativeAlreadyMinted(history, narrative.name);
+
+    const scoreBar = "█".repeat(narrative.confidence) + "░".repeat(10 - narrative.confidence);
+    console.log(`\n📌 ${narrative.name}  [${scoreBar}] ${narrative.confidence}/10`);
     console.log(`   Matches: ${narrative.matchingTokens.length} tokens`);
     console.log(`   Tokens: ${narrative.matchingTokens.join(", ")}`);
     console.log(`   Reason: ${narrative.description}`);
-    console.log(`   Suggested: ${narrative.tokenName} ($${narrative.symbol})`);
 
-    if (!canCreateToken) {
-      console.log("\n⏭️  Skipping token creation (insufficient balance)");
-      console.log("   Please fund wallet to create reactive token");
-      continue;
+    if (existingEntry) {
+      console.log(`   ⏭️  SKIPPED — already minted as $${existingEntry.symbol} on ${existingEntry.createdAt}`);
+      skippedNarratives.push({ narrative, reason: `Already minted as $${existingEntry.symbol}` });
+    } else {
+      console.log(`   ✨ NEW narrative — eligible for minting`);
+      newNarratives.push(narrative);
     }
+  }
 
+  // Send narrative summary to Telegram
+  await sendTelegram(buildNarrativeSummaryMessage(allNarratives, newNarratives.length, skippedNarratives.length));
+
+  // Step 4: Mint tokens for top new narratives (max 3)
+  if (newNarratives.length === 0) {
+    console.log("\n📝 All detected narratives have already been minted!");
+    console.log("💡 Run again later to catch new emerging trends");
+    process.exit(0);
+  }
+
+  const toMint = newNarratives.slice(0, MAX_TOKENS_PER_RUN);
+  console.log(`\n🎯 Minting top ${toMint.length} new narrative${toMint.length > 1 ? "s" : ""} (of ${newNarratives.length} eligible)`);
+
+  if (!canCreateToken) {
+    console.log("⏭️  Skipping all token creation (insufficient balance)");
+    console.log("   Please fund wallet to create reactive tokens");
+    process.exit(0);
+  }
+
+  let mintedCount = 0;
+  for (const narrative of toMint) {
     console.log("\n⛓️  Creating reactive token on devnet...");
     try {
       const result = await createSplToken(
@@ -397,21 +570,40 @@ async function main() {
         narrative.description
       );
 
+      // Save to history
+      history.entries.push({
+        narrative: narrative.name,
+        tokenName: narrative.tokenName,
+        symbol: narrative.symbol,
+        mintAddress: result.mintAddress,
+        txSignature: result.signature,
+        matchingTokens: narrative.matchingTokens,
+        confidence: narrative.confidence,
+        createdAt: new Date().toISOString(),
+      });
+      saveHistory(history);
+
+      mintedCount++;
       console.log("\n✅ TOKEN CREATED SUCCESSFULLY!");
       console.log("─".repeat(60));
       console.log(`   Token Name:    ${narrative.tokenName}`);
       console.log(`   Symbol:        ${narrative.symbol}`);
+      console.log(`   Confidence:    ${narrative.confidence}/10`);
       console.log(`   Mint Address:  ${result.mintAddress}`);
       console.log(`   TX Signature:  ${result.signature}`);
       console.log(`   Explorer:      https://solscan.io/tx/${result.signature}?cluster=devnet`);
       console.log("─".repeat(60));
+
+      // Notify Telegram
+      await sendTelegram(buildTokenMintedMessage(narrative, result.mintAddress, result.signature));
     } catch (error) {
       console.error("❌ Failed to create token:", error);
     }
   }
 
   console.log("\n" + "=".repeat(60));
-  console.log("🎉 Detection cycle complete!");
+  console.log(`🎉 Detection cycle complete! Minted ${mintedCount}/${toMint.length} tokens`);
+  console.log(`📜 Total narratives in history: ${history.entries.length}`);
   console.log("=".repeat(60));
 }
 

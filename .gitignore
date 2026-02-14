@@ -7,6 +7,9 @@ dist/
 # Environment variables
 .env
 
+# Runtime data (narrative history)
+data/
+
 # OS files
 .DS_Store
 Thumbs.db
