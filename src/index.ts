@@ -30,6 +30,8 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, "..", "data");
 const HISTORY_FILE = path.join(DATA_DIR, "history.json");
 const MAX_TOKENS_PER_RUN = 3;
+const MAX_TOKENS_PER_DAY = 5;
+const MIN_CONFIDENCE = 7;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
@@ -604,6 +606,9 @@ async function main() {
     if (existingEntry) {
       console.log(`   ⏭️  SKIPPED — already minted as $${existingEntry.symbol} on ${existingEntry.createdAt}`);
       skippedNarratives.push({ narrative, reason: `Already minted as $${existingEntry.symbol}` });
+    } else if (narrative.confidence < MIN_CONFIDENCE) {
+      console.log(`   ⏭️  SKIPPED — confidence too low (need ${MIN_CONFIDENCE}+)`);
+      skippedNarratives.push({ narrative, reason: `Confidence ${narrative.confidence}/10 below threshold ${MIN_CONFIDENCE}` });
     } else {
       console.log(`   ✨ NEW narrative — eligible for minting`);
       newNarratives.push(narrative);
@@ -620,8 +625,24 @@ async function main() {
     process.exit(0);
   }
 
-  const toMint = newNarratives.slice(0, MAX_TOKENS_PER_RUN);
-  console.log(`\n🎯 Minting top ${toMint.length} new narrative${toMint.length > 1 ? "s" : ""} (of ${newNarratives.length} eligible)`);
+  // Check daily cap
+  const mintedToday = history.entries.filter((e) => {
+    const entryDate = new Date(e.createdAt);
+    const now = new Date();
+    return now.getTime() - entryDate.getTime() < 24 * 60 * 60 * 1000;
+  }).length;
+
+  const dailyRemaining = Math.max(0, MAX_TOKENS_PER_DAY - mintedToday);
+  if (dailyRemaining === 0) {
+    console.log(`\n🚫 Daily cap reached (${MAX_TOKENS_PER_DAY} tokens in 24h). Try again tomorrow.`);
+    await sendTelegram(`🚫 <b>Daily cap reached</b>\nAlready minted ${mintedToday} tokens in the last 24h (limit: ${MAX_TOKENS_PER_DAY})`);
+    await sendRunLog();
+    process.exit(0);
+  }
+
+  const mintLimit = Math.min(newNarratives.length, MAX_TOKENS_PER_RUN, dailyRemaining);
+  const toMint = newNarratives.slice(0, mintLimit);
+  console.log(`\n🎯 Minting ${toMint.length} token${toMint.length > 1 ? "s" : ""} (${newNarratives.length} eligible, ${dailyRemaining} daily remaining)`);
 
   if (!canCreateToken) {
     console.log("⏭️  Skipping all token creation (insufficient balance)");
