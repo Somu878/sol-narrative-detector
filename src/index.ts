@@ -34,6 +34,24 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
 
+// ─── Log Buffer ──────────────────────────────────────────
+
+const logBuffer: string[] = [];
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+console.log = (...args: any[]) => {
+  const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  logBuffer.push(line);
+  originalConsoleLog.apply(console, args);
+};
+
+console.error = (...args: any[]) => {
+  const line = "❌ " + args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  logBuffer.push(line);
+  originalConsoleError.apply(console, args);
+};
+
 // ─── Types ───────────────────────────────────────────────
 
 interface TokenData {
@@ -121,8 +139,56 @@ async function sendTelegram(message: string): Promise<void> {
       { timeout: 10000 }
     );
   } catch (error) {
-    console.log("⚠️  Telegram send failed:", error instanceof Error ? error.message : error);
+    originalConsoleLog("⚠️  Telegram send failed:", error instanceof Error ? error.message : error);
   }
+}
+
+async function sendRunLog(): Promise<void> {
+  if (!TELEGRAM_ENABLED || logBuffer.length === 0) return;
+
+  // Clean up log lines: strip ANSI codes, trim
+  const fullLog = logBuffer.join("\n");
+
+  // Telegram message limit is 4096 chars — chunk if needed
+  const MAX_LEN = 4000;
+  const header = "📋 <b>Run Log</b>\n\n";
+  const chunks: string[] = [];
+
+  if (fullLog.length + header.length <= MAX_LEN) {
+    chunks.push(header + `<pre>${escapeHtml(fullLog)}</pre>`);
+  } else {
+    // Split into multiple messages
+    const lines = fullLog.split("\n");
+    let current = "";
+    let chunkIndex = 1;
+
+    for (const line of lines) {
+      if (current.length + line.length + 1 > MAX_LEN - 200) {
+        chunks.push(`📋 <b>Run Log (part ${chunkIndex})</b>\n\n<pre>${escapeHtml(current)}</pre>`);
+        chunkIndex++;
+        current = line;
+      } else {
+        current += (current ? "\n" : "") + line;
+      }
+    }
+    if (current) {
+      chunks.push(`📋 <b>Run Log (part ${chunkIndex})</b>\n\n<pre>${escapeHtml(current)}</pre>`);
+    }
+  }
+
+  for (const chunk of chunks) {
+    await sendTelegram(chunk);
+    if (chunks.length > 1) {
+      await new Promise((r) => setTimeout(r, 500)); // avoid rate limit
+    }
+  }
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function buildNarrativeSummaryMessage(narratives: DiscoveredNarrative[], newCount: number, skippedCount: number): string {
@@ -605,6 +671,9 @@ async function main() {
   console.log(`🎉 Detection cycle complete! Minted ${mintedCount}/${toMint.length} tokens`);
   console.log(`📜 Total narratives in history: ${history.entries.length}`);
   console.log("=".repeat(60));
+
+  // Send full run log to Telegram
+  await sendRunLog();
 }
 
 main().catch(console.error);
