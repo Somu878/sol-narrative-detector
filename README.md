@@ -27,7 +27,6 @@ Think of it as an **automated trend spotter** — it watches the market so you d
 - **📡 Real-Time Data** — Fetches live token data from the [DexScreener API](https://dexscreener.com/)
 - **🧠 Narrative Detection** — Analyzes token names and symbols against 6 predefined narrative themes using keyword matching
 - **⛓️ On-Chain Reactions** — Automatically creates SPL tokens on Solana devnet when a narrative threshold (3+ tokens) is met
-- **🔄 Fallback Data** — Includes hardcoded sample data with real meme tokens for offline/rate-limited scenarios
 - **🛡️ Safe by Default** — All operations run on Solana **devnet only** — no real funds involved
 - **🔑 Wallet Utilities** — Built-in wallet generation script for quick setup
 
@@ -48,7 +47,7 @@ Think of it as an **automated trend spotter** — it watches the market so you d
 
 ### Detection Pipeline
 
-1. **Fetch** — Pulls the latest 50 Solana token pairs from DexScreener (falls back to hardcoded data if API is unavailable)
+1. **Fetch** — Pulls the latest 50 Solana token pairs from the DexScreener API
 2. **Analyze** — Scans each token's name and symbol against keyword lists for 6 narrative themes
 3. **Detect** — A narrative is "detected" when **3 or more** tokens match its keywords
 4. **React** — For each detected narrative, a new SPL token is minted on devnet with 1,000,000 supply

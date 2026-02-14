@@ -83,20 +83,7 @@ const NARRATIVES: NarrativeTheme[] = [
   },
 ];
 
-const FALLBACK_TOKENS: TokenData[] = [
-  { address: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", name: "BONK", symbol: "BONK", priceUsd: "0.000021", liquidity: "12000000", volume24h: "45000000" },
-  { address: "85VBFQZC9TZkfaptBWqv14ALD9fJNUKtWA41kh69teRP", name: "WIF", symbol: "WIF", priceUsd: "1.82", liquidity: "89000000", volume24h: "156000000" },
-  { address: "GDLN2CTRRD6EVFWrhY9K2wnEPJLJ5S5S2VPGQZMAMU4", name: "POPCAT", symbol: "POPCAT", priceUsd: "0.72", liquidity: "45000000", volume24h: "89000000" },
-  { address: "MEV1wLQD7VGS1KEksGzgWyYKnuKWBdPHzXy3ArYQRiS", name: "MEOW", symbol: "MEW", priceUsd: "0.085", liquidity: "23000000", volume24h: "67000000" },
-  { address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1", name: "USD Coin", symbol: "USDC", priceUsd: "1.00", liquidity: "500000000", volume24h: "2000000000" },
-  { address: "JUPyiwrYJFskUPiHa7hkeR8VUtkqjberbSOWd91pbT2", name: "Jupiter", symbol: "JUP", priceUsd: "0.82", liquidity: "78000000", volume24h: "145000000" },
-  { address: "A8rKqNLsD4WzqWBWR8dKQ4nGxP4tVWYXvSE9F1YJvS8", name: "PEPE", symbol: "PEPE", priceUsd: "0.0000012", liquidity: "15000000", volume24h: "34000000" },
-  { address: "PNutKy7GJM1Y3LmkqKVGnmMU1DNPvLfFtsTBYx2QdC", name: "Peanut the Squirrel", symbol: "PNUT", priceUsd: "0.45", liquidity: "18000000", volume24h: "42000000" },
-  { address: "Gj3J81M7xVQTyrPVMXyJqZ7LxdLnCmYkTkgHZYHq6q", name: "Giga Chad", symbol: "GIGA", priceUsd: "0.032", liquidity: "8900000", volume24h: "18000000" },
-  { address: "2ND3y7YGrP5rEqMbibVgE4Yf2qSJRzM2Z5B1vT9qW3n", name: "Moo Deng", symbol: "MOO", priceUsd: "0.18", liquidity: "12000000", volume24h: "28000000" },
-  { address: "GoAt2V6S6M1L8bPxJDqBqrQoYwYTL9zK4xR1P2cN3m", name: "Goatseus", symbol: "GOAT", priceUsd: "0.00045", liquidity: "6700000", volume24h: "15000000" },
-  { address: "TRUMPW6qR4K3s8qK3vN9m2P1bY5xGz3K4qP2V7Yf8R", name: "MAGA Trump", symbol: "TRUMP", priceUsd: "12.50", liquidity: "34000000", volume24h: "78000000" },
-];
+
 
 async function fetchDexScreenerTokens(): Promise<TokenData[]> {
   try {
@@ -106,8 +93,8 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
     );
     const pairs = response.data?.pairs || [];
     if (!pairs || pairs.length === 0) {
-      console.log("⚠️  API returned empty, using fallback data");
-      return FALLBACK_TOKENS;
+      console.log("⚠️  API returned empty results");
+      return [];
     }
     return pairs.slice(0, 50).map((pair: any) => ({
       address: pair.baseToken?.address || "",
@@ -118,8 +105,8 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
       volume24h: pair.volume?.h24 || "0",
     }));
   } catch (error) {
-    console.log("⚠️  DexScreener API failed, using fallback data");
-    return FALLBACK_TOKENS;
+    console.log("⚠️  DexScreener API failed:", error instanceof Error ? error.message : error);
+    return [];
   }
 }
 
@@ -151,7 +138,7 @@ function createTokenName(narrativeName: string, timestamp: number): { name: stri
     "Exotic Animals": { name: "ExoticAnimalMeme2026", symbol: "ANML26" },
     "Food Memes": { name: "FoodMemeToken2026", symbol: "FOOD26" },
   };
-  
+
   return baseNames[narrativeName] || { name: "MemeToken2026", symbol: "MEME26" };
 }
 
@@ -304,7 +291,7 @@ async function main() {
     }
 
     const { name, symbol } = createTokenName(narrative.name, Date.now());
-    
+
     console.log("\n⛓️  Creating reactive token on devnet...");
     try {
       const result = await createSplToken(
