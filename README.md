@@ -207,7 +207,15 @@ All configuration is via environment variables in `.env`:
 ```
 meme-narrative-detector/
 ├── src/
-│   ├── index.ts              # Core agent: fetch → AI analyze → mint → notify
+│   ├── index.ts              # Main orchestrator: ties everything together
+│   ├── types.ts              # Shared TypeScript interfaces
+│   ├── config.ts             # Constants and environment config
+│   ├── logger.ts             # Console log buffer for Telegram streaming
+│   ├── history.ts            # Narrative history persistence & deduplication
+│   ├── telegram.ts           # Telegram bot notifications & message builders
+│   ├── dexscreener.ts        # DexScreener API data fetching
+│   ├── ai.ts                 # Groq AI narrative discovery
+│   ├── solana.ts             # SPL token creation on devnet
 │   └── generate-wallet.ts    # Utility to generate new Solana keypair
 ├── data/
 │   └── history.json          # Persistent narrative history (auto-created)
