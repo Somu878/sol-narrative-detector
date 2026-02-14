@@ -3,8 +3,11 @@ export const logBuffer: string[] = [];
 const originalConsoleLog = console.log;
 const originalConsoleError = console.error;
 
-// Re-export originals so telegram.ts can log without recursion
 export { originalConsoleLog };
+
+export function resetLogBuffer(): void {
+    logBuffer.length = 0;
+}
 
 console.log = (...args: any[]) => {
     const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
