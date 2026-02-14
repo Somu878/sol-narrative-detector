@@ -259,7 +259,9 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
       }
       console.log(`   🔎 Search "${query}": found ${solanaPairs.length} Solana pairs`);
     } catch (error) {
-      console.log(`   ⚠️  Search "${query}" failed:`, error instanceof Error ? error.message : error);
+      const msg = error instanceof Error ? error.message : String(error);
+      console.log(`   ⚠️  Search "${query}" failed:`, msg);
+      await sendTelegram(`⚠️ <b>DexScreener Error</b>\nSearch "${query}" failed: <code>${escapeHtml(msg)}</code>`);
     }
   }
 
@@ -299,7 +301,9 @@ async function fetchDexScreenerTokens(): Promise<TokenData[]> {
     }
     console.log(`   🚀 Boosted tokens: found ${solanaBoosted.length} Solana tokens`);
   } catch (error) {
-    console.log("   ⚠️  Boosted tokens fetch failed:", error instanceof Error ? error.message : error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.log("   ⚠️  Boosted tokens fetch failed:", msg);
+    await sendTelegram(`⚠️ <b>DexScreener Error</b>\nBoosted tokens fetch failed: <code>${escapeHtml(msg)}</code>`);
   }
 
   return Array.from(allTokens.values());
@@ -419,6 +423,7 @@ If no strong narratives are found (fewer than 3 tokens matching any theme), retu
       }
 
       console.error("❌ Groq API error:", errorMsg);
+      await sendTelegram(`🚨 <b>Groq AI Error</b>\n<code>${escapeHtml(errorMsg.slice(0, 500))}</code>`);
       return [];
     }
   }
@@ -663,7 +668,9 @@ async function main() {
       // Notify Telegram
       await sendTelegram(buildTokenMintedMessage(narrative, result.mintAddress, result.signature));
     } catch (error) {
-      console.error("❌ Failed to create token:", error);
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error("❌ Failed to create token:", msg);
+      await sendTelegram(`🚨 <b>Token Mint Failed</b>\n${narrative.tokenName} ($${narrative.symbol})\n<code>${escapeHtml(msg.slice(0, 500))}</code>`);
     }
   }
 
